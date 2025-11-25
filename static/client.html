@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎨 WebRTC Collaborative Whiteboard</title>
+<style>
+body { font-family: Arial, sans-serif; text-align:center; background:#187de2; }
+#board { border:2px solid #333; margin-top:10px; cursor:crosshair; }
+#board:hover {
+    box-shadow: 0px 0px 12px rgba(0, 0, 0, 0.3);
+}
+#controls { margin:10px 0; }
+button { padding:5px 10px; margin:0 5px; }
+button:hover {
+    transform: scale(1.05);
+    box-shadow: 0px 0px 6px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+}
+</style>
+</head>
+<body>
+
+<h1>🎨 Collaborative Whiteboard</h1>
+
+<div id="controls">
+  <input type="text" id="sessionInput" placeholder="Session name">
+  <button id="createBtn">Create</button>
+  <button id="connectBtn">Join</button>
+  <button id="clearBtn">Clear</button>
+  <button id="saveBtn">Save</button>
+  <label>Color: <input type="color" id="colorPicker" value="#000000"></label>
+  <label>Brush: <input type="range" id="brushSize" min="1" max="10" value="2"></label>
+</div>
+
+<canvas id="board" width="800" height="500"></canvas>
+<div id="status">Not connected</div>
+
+<script>
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+const statusText = document.getElementById("status");
+let drawing = false;
+let last = null;
+let ws = null;
+let sessionName = "";
+let token = "";
+
+const colorPicker = document.getElementById("colorPicker");
+const brushSize = document.getElementById("brushSize");
+
+function drawLine(x0, y0, x1, y1, color, size, emit=true){
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = size;
+    ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.closePath();
+
+    if(emit && ws && ws.readyState===WebSocket.OPEN){
+        ws.send(JSON.stringify({type:"draw", x0,y0,x1,y1,color,size}));
+    }
+}
+
+canvas.addEventListener("mousedown", e=>{
+    drawing=true;
+    last={x:e.offsetX, y:e.offsetY};
+});
+canvas.addEventListener("mouseup", ()=>drawing=false);
+canvas.addEventListener("mousemove", e=>{
+    if(!drawing) return;
+    drawLine(last.x,last.y,e.offsetX,e.offsetY,colorPicker.value,brushSize.value);
+    last={x:e.offsetX,y:e.offsetY};
+});
+
+document.getElementById("clearBtn").onclick = ()=>{
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(ws && ws.readyState===WebSocket.OPEN){
+        ws.send(JSON.stringify({type:"clear"}));
+    }
+};
+
+document.getElementById("saveBtn").onclick = async ()=>{
+    if(!sessionName) return alert("Join a session first");
+    const canvasData = canvas.toDataURL();
+    await fetch("/sessions/save", {
+        method:"POST",
+        headers: {
+            "Content-Type":"application/json",
+            "token": token
+        },
+        body: JSON.stringify({session_name:sessionName, canvas_data:canvasData})
+    });
+    alert("Canvas saved!");
+};
+
+document.getElementById("createBtn").onclick = async ()=>{
+    const name = document.getElementById("sessionInput").value.trim();
+    if(!name) return alert("Enter a session name");
+    const res = await fetch("/sessions/create", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({session_name:name})
+    });
+    const data = await res.json();
+    token = data.token;
+    sessionName = name;
+    alert(`Session "${name}" created!`);
+};
+
+document.getElementById("connectBtn").onclick = ()=>{
+    const name = document.getElementById("sessionInput").value.trim();
+    if(!name) return alert("Enter a session name");
+    sessionName = name;
+
+    ws = new WebSocket(`ws://${window.location.host}/ws/${sessionName}`);
+
+    ws.onopen = ()=>statusText.textContent="Connected to session: "+sessionName;
+    ws.onmessage = event=>{
+        const data = JSON.parse(event.data);
+        if(data.type==="load" && data.canvas_state){
+            const img = new Image();
+            img.src = data.canvas_state;
+            img.onload = ()=>ctx.drawImage(img,0,0);
+        } else if(data.type==="draw"){
+            drawLine(data.x0,data.y0,data.x1,data.y1,data.color,data.size,false);
+        } else if(data.type==="clear"){
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+        }
+    };
+    ws.onclose = ()=>statusText.textContent="Disconnected";
+};
+</script>
+
+</body>
+</html>
